@@ -1,0 +1,38 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-sans: "Inter", "Segoe UI", Arial, ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
+  --background: 210 20% 98%;
+  --foreground: 220 30% 9%;
+  --card: 0 0% 100%;
+  --card-foreground: 220 30% 9%;
+  --muted: 210 18% 92%;
+  --muted-foreground: 215 12% 43%;
+  --border: 214 18% 84%;
+  --primary: 205 85% 32%;
+  --primary-foreground: 0 0% 100%;
+  --accent: 160 70% 36%;
+  --accent-foreground: 0 0% 100%;
+}
+
+* {
+  border-color: hsl(var(--border));
+}
+
+body {
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+}
+
+.editor-grid {
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 0.85fr);
+}
+
+@media (max-width: 900px) {
+  .editor-grid {
+    grid-template-columns: 1fr;
+  }
+}
