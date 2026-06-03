@@ -40,7 +40,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
 
   useEffect(() => {
     if (typeof window !== "undefined") {
-      setApiKey(localStorage.getItem("reportai_gemini_key") ?? "");
+      setApiKey(localStorage.getItem("reportai_openai_key") ?? "");
     }
   }, []);
 
@@ -124,7 +124,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     setMessage("");
     try {
       if (typeof window !== "undefined") {
-        localStorage.setItem("reportai_gemini_key", apiKey);
+        localStorage.setItem("reportai_openai_key", apiKey);
       }
 
       let templateProfile: any = undefined;
@@ -270,16 +270,16 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
                   <div className="flex items-center justify-between">
                     <h4 className="text-xs font-bold uppercase tracking-wider text-accent flex items-center gap-1.5">
                       <Sparkles className="h-3.5 w-3.5" />
-                      Gemini AI Configuration
+                      OpenAI AI Configuration
                     </h4>
                   </div>
                   <p className="text-[11px] text-muted-foreground leading-relaxed">
-                    Enter your Gemini API key below to perform deep academic analysis on your project details and guidelines, generating customized report sections and questions. Left blank, the system will use smart keyword matching.
+                    Enter your OpenAI API key below to perform deep academic analysis on your project details and guidelines, generating customized report sections and questions. Left blank, the system will use smart keyword matching.
                   </p>
                   <div className="flex gap-2">
                     <Input
                       type="password"
-                      placeholder="Enter Gemini API Key (saved locally)..."
+                      placeholder="Enter OpenAI API Key (saved locally)..."
                       value={apiKey}
                       onChange={(e) => setApiKey(e.target.value)}
                       className="text-xs font-mono"

@@ -75,7 +75,7 @@ export function UploadWizard({ projectId }: { projectId?: string }) {
       const loadedProject = await getProject(user.uid, projectId);
       if (loadedProject) {
         setProcessingMessage("AI is customizing your academic questionnaire based on learned guidelines...");
-        const storedKey = typeof window !== "undefined" ? localStorage.getItem("reportai_gemini_key") : null;
+        const storedKey = typeof window !== "undefined" ? localStorage.getItem("reportai_openai_key") : null;
         
         const templateProfile = {
           chapters: ["Abstract", "Introduction", "Literature Review", "Methodology", "Results", "Conclusion"],
