@@ -49,10 +49,9 @@ export function generateFallbackQuestions(title: string, description: string, do
 // AI Question Generator using OpenAI API (same API key structure as LaTeX generation)
 export async function generateAIQuestions(
   project: { title: string; description: string; domain: string },
-  templateProfile?: { chapters?: string[]; citation?: string; font?: string },
-  apiKey?: string
+  templateProfile?: { chapters?: string[]; citation?: string; font?: string; spacing?: string }
 ): Promise<Question[]> {
-  const finalApiKey = apiKey || process.env.NEXT_PUBLIC_OPENAI_API_KEY || process.env.OPENAI_API_KEY;
+  const finalApiKey = process.env.NEXT_PUBLIC_OPENAI_API_KEY || process.env.OPENAI_API_KEY;
 
   if (!finalApiKey) {
     console.log("No OpenAI API key found, generating smart fallback questions.");

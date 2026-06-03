@@ -75,19 +75,14 @@ export function UploadWizard({ projectId }: { projectId?: string }) {
       const loadedProject = await getProject(user.uid, projectId);
       if (loadedProject) {
         setProcessingMessage("AI is customizing your academic questionnaire based on learned guidelines...");
-        const storedKey = typeof window !== "undefined" ? localStorage.getItem("reportai_openai_key") : null;
-        
-        const templateProfile = {
-          chapters: ["Abstract", "Introduction", "Literature Review", "Methodology", "Results", "Conclusion"],
-          citation: "IEEE",
-          font: "Times New Roman",
-          spacing: "1.5"
-        };
-        
         const nextQuestions = await generateAIQuestions(
           { title: loadedProject.title, description: loadedProject.description, domain: loadedProject.domain },
-          templateProfile,
-          storedKey || undefined
+          {
+            chapters: ["Abstract", "Introduction", "Literature Review", "Methodology", "Results", "Conclusion"],
+            citation: "IEEE",
+            font: "Times New Roman",
+            spacing: "1.5"
+          }
         );
         
         // Retrieve existing questionnaire answers to preserve them
