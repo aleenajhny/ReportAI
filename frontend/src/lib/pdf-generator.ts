@@ -17,6 +17,7 @@ function normalizeLatexText(value: string) {
     .replace(/\\\}/g, "}")
     .replace(/\\textasciitilde\{\}|\\textasciitilde/g, "~")
     .replace(/\\textbackslash\{\}|\\textbackslash/g, "\\")
+    .replace(/\\textbullet\b/g, "")
     .replace(/~+/g, " ")
     .replace(/``|''/g, "\"")
     .replace(/[–—]/g, "-")
@@ -30,7 +31,9 @@ function stripLatexCommands(value: string) {
     .replace(/\\cite(?:\[[^\]]*\])?\{[^}]*\}/g, "[Ref]")
     .replace(/\\includegraphics(?:\[[^\]]*\])?\{[^}]*\}/g, "[Diagram]")
     .replace(/\\(?:label|ref|pageref|bibliographystyle|bibliography)\{[^}]*\}/g, "")
-    .replace(/\\(?:begin|end)\{(?:itemize|enumerate|center|figure|table|tabular|flushleft|flushright)\}/g, "")
+    .replace(/\\(?:begin|end)\{[^}]+\}(?:\[[^\]]*\])?/g, "")
+    .replace(/\blstlisting(?:\[[^\]]*\])?/gi, "")
+    .replace(/^\s*\[[^\]]*(?:label|language|caption)\s*=[^\]]*\]\s*/gi, "")
     .replace(/\\(?:onehalfspacing|maketitle|tableofcontents|clearpage|newpage|noindent|centering)\b/g, "")
     .replace(/\\(?:textbf|textit|texttt|emph|underline|url)\{([^{}]*)\}/g, "$1")
     .replace(/\\href\{[^{}]*\}\{([^{}]*)\}/g, "$1")
@@ -48,7 +51,8 @@ function stripLatexCommands(value: string) {
 function parseBlocks(value: string): RenderBlock[] {
   const itemMarker = "__REPORTAI_LIST_ITEM__";
   const prepared = value
-    .replace(/\\begin\{(?:itemize|enumerate)\}|\\end\{(?:itemize|enumerate)\}/g, "\n")
+    .replace(/\\begin\{(?:itemize|enumerate)\}(?:\[[^\]]*\])?|\\end\{(?:itemize|enumerate)\}/g, "\n")
+    .replace(/\\begin\{(?:lstlisting|verbatim|minted)\}(?:\[[^\]]*\])?|\\end\{(?:lstlisting|verbatim|minted)\}/g, "\n")
     .replace(/\\item(?:\[[^\]]*\])?/g, `\n${itemMarker} `)
     .replace(/\\\\|\\newline/g, "\n");
 
@@ -78,10 +82,12 @@ function parseBlocks(value: string): RenderBlock[] {
       return;
     }
 
-    if (line.startsWith(itemMarker)) {
+    const markdownListMatch = line.match(/^(?:[*-]|\d+[.)])\s+(.+)$/);
+
+    if (line.startsWith(itemMarker) || markdownListMatch) {
       flushListItem();
       flushParagraph();
-      currentListItem = [line.slice(itemMarker.length).trim()];
+      currentListItem = [line.startsWith(itemMarker) ? line.slice(itemMarker.length).trim() : markdownListMatch?.[1] ?? ""];
       return;
     }
 
