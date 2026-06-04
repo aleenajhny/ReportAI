@@ -75,7 +75,7 @@ def get_openai_client_and_model(api_key: str):
     
     if api_key.startswith("AIzaSy"):
         base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
-        model = "gemini-1.5-flash"
+        model = "gemini-2.5-flash"
     elif api_key.startswith("gsk_"):
         base_url = "https://api.groq.com/openai/v1"
         model = "llama-3.3-70b-versatile"
