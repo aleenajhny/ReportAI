@@ -33,9 +33,10 @@ function stripLatexCommands(value: string) {
     .replace(/\\(?:label|ref|pageref|bibliographystyle|bibliography)\{[^}]*\}/g, "")
     .replace(/\\(?:begin|end)\{[^}]+\}(?:\[[^\]]*\])?/g, "")
     .replace(/\blstlisting(?:\[[^\]]*\])?/gi, "")
-    .replace(/^\s*\[[^\]]*(?:label|language|caption)\s*=[^\]]*\]\s*/gi, "")
+    .replace(/\[[^\]]*(?:label|language|caption)\s*=[^\]]*\]\s*/gi, "")
     .replace(/\\(?:onehalfspacing|maketitle|tableofcontents|clearpage|newpage|noindent|centering)\b/g, "")
     .replace(/\\(?:textbf|textit|texttt|emph|underline|url)\{([^{}]*)\}/g, "$1")
+    .replace(/\\(?:textbf|textit|texttt|emph|underline|url)\{?/g, "")
     .replace(/\\href\{[^{}]*\}\{([^{}]*)\}/g, "$1")
     .replace(/\\(?:chapter|section|subsection|subsubsection)\*?\{([^{}]*)\}/g, "$1")
     .replace(/\$([^$]*)\$/g, "$1")
@@ -54,6 +55,7 @@ function parseBlocks(value: string): RenderBlock[] {
     .replace(/\\begin\{(?:itemize|enumerate)\}(?:\[[^\]]*\])?|\\end\{(?:itemize|enumerate)\}/g, "\n")
     .replace(/\\begin\{(?:lstlisting|verbatim|minted)\}(?:\[[^\]]*\])?|\\end\{(?:lstlisting|verbatim|minted)\}/g, "\n")
     .replace(/\\item(?:\[[^\]]*\])?/g, `\n${itemMarker} `)
+    .replace(/(^|\s)(?:[*-]|\d+[.)])\s+(?=[A-Z0-9])/g, `\n${itemMarker} `)
     .replace(/\\\\|\\newline/g, "\n");
 
   const blocks: RenderBlock[] = [];
