@@ -1,5 +1,103 @@
 import { jsPDF } from "jspdf";
 
+type ParsedSection = { title: string; body: string };
+type RenderBlock = { type: "paragraph"; text: string } | { type: "list-item"; text: string };
+
+function normalizeLatexText(value: string) {
+  return value
+    .replace(/\r\n/g, "\n")
+    .replace(/(^|[^\\])%[^\n]*/g, "$1")
+    .replace(/```(?:latex)?|```/gi, "")
+    .replace(/\\&/g, "&")
+    .replace(/\\%/g, "%")
+    .replace(/\\\$/g, "$")
+    .replace(/\\#/g, "#")
+    .replace(/\\_/g, "_")
+    .replace(/\\\{/g, "{")
+    .replace(/\\\}/g, "}")
+    .replace(/\\textasciitilde\{\}|\\textasciitilde/g, "~")
+    .replace(/\\textbackslash\{\}|\\textbackslash/g, "\\")
+    .replace(/~+/g, " ")
+    .replace(/``|''/g, "\"")
+    .replace(/[–—]/g, "-")
+    .replace(/--+/g, "-");
+}
+
+function stripLatexCommands(value: string) {
+  let text = normalizeLatexText(value);
+
+  text = text
+    .replace(/\\cite(?:\[[^\]]*\])?\{[^}]*\}/g, "[Ref]")
+    .replace(/\\includegraphics(?:\[[^\]]*\])?\{[^}]*\}/g, "[Diagram]")
+    .replace(/\\(?:label|ref|pageref|bibliographystyle|bibliography)\{[^}]*\}/g, "")
+    .replace(/\\(?:begin|end)\{(?:itemize|enumerate|center|figure|table|tabular|flushleft|flushright)\}/g, "")
+    .replace(/\\(?:onehalfspacing|maketitle|tableofcontents|clearpage|newpage|noindent|centering)\b/g, "")
+    .replace(/\\(?:textbf|textit|texttt|emph|underline|url)\{([^{}]*)\}/g, "$1")
+    .replace(/\\href\{[^{}]*\}\{([^{}]*)\}/g, "$1")
+    .replace(/\\(?:chapter|section|subsection|subsubsection)\*?\{([^{}]*)\}/g, "$1")
+    .replace(/\$([^$]*)\$/g, "$1")
+    .replace(/\\[a-zA-Z]+\*?(?:\[[^\]]*\])?(?:\{([^{}]*)\})?/g, "$1")
+    .replace(/[{}]/g, "")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  return text;
+}
+
+function parseBlocks(value: string): RenderBlock[] {
+  const itemMarker = "__REPORTAI_LIST_ITEM__";
+  const prepared = value
+    .replace(/\\begin\{(?:itemize|enumerate)\}|\\end\{(?:itemize|enumerate)\}/g, "\n")
+    .replace(/\\item(?:\[[^\]]*\])?/g, `\n${itemMarker} `)
+    .replace(/\\\\|\\newline/g, "\n");
+
+  const blocks: RenderBlock[] = [];
+  let currentParagraph: string[] = [];
+  let currentListItem: string[] | null = null;
+
+  const flushParagraph = () => {
+    const text = stripLatexCommands(currentParagraph.join(" "));
+    if (text) blocks.push({ type: "paragraph", text });
+    currentParagraph = [];
+  };
+
+  const flushListItem = () => {
+    if (!currentListItem) return;
+    const text = stripLatexCommands(currentListItem.join(" "));
+    if (text) blocks.push({ type: "list-item", text });
+    currentListItem = null;
+  };
+
+  prepared.split("\n").forEach((rawLine) => {
+    const line = rawLine.trim();
+
+    if (!line) {
+      flushListItem();
+      flushParagraph();
+      return;
+    }
+
+    if (line.startsWith(itemMarker)) {
+      flushListItem();
+      flushParagraph();
+      currentListItem = [line.slice(itemMarker.length).trim()];
+      return;
+    }
+
+    if (currentListItem) {
+      currentListItem.push(line);
+      return;
+    }
+
+    currentParagraph.push(line);
+  });
+
+  flushListItem();
+  flushParagraph();
+  return blocks;
+}
+
 export function generateAndDownloadPdf(projectTitle: string, latex: string) {
   const doc = new jsPDF({
     orientation: "portrait",
@@ -14,15 +112,15 @@ export function generateAndDownloadPdf(projectTitle: string, latex: string) {
 
   // 1. Parse Title, Author, Chapters, and Sections
   const titleMatch = latex.match(/\\title\{([\s\S]*?)\}/);
-  const parsedTitle = titleMatch ? titleMatch[1].trim() : projectTitle;
+  const parsedTitle = stripLatexCommands(titleMatch ? titleMatch[1] : projectTitle);
 
   // Extract Chapters
-  const chapterRegex = /\\chapter\{([^}]+)\}([\s\S]*?)(?=\\chapter|\s*\\bibliographystyle|\s*\\end\{document\})/g;
+  const chapterRegex = /\\chapter\*?\{([^}]+)\}([\s\S]*?)(?=\\chapter\*?\{|\s*\\bibliographystyle|\s*\\end\{document\})/g;
   const chapters: { title: string; content: string }[] = [];
   let match;
   while ((match = chapterRegex.exec(latex)) !== null) {
     chapters.push({
-      title: match[1].trim(),
+      title: stripLatexCommands(match[1]),
       content: match[2].trim(),
     });
   }
@@ -155,20 +253,18 @@ export function generateAndDownloadPdf(projectTitle: string, latex: string) {
     
     // Parse Sections within Chapter Content
     // A regex to match \section{Section Title}
-    const sectionRegex = /\\section\{([^}]+)\}([\s\S]*?)(?=\\section|$)/g;
-    const sections: { title: string; body: string }[] = [];
+    const sectionRegex = /\\section\*?\{([^}]+)\}([\s\S]*?)(?=\\section\*?\{|$)/g;
+    const sections: ParsedSection[] = [];
     let secMatch;
     
     // Clean LaTeX syntax tags from chapter content
     let cleanContent = ch.content
-      .replace(/\\begin\{itemize\}|\\end\{itemize\}|\\begin\{enumerate\}|\\end\{enumerate\}/g, "")
-      .replace(/\\item/g, "  * ")
       .replace(/\\onehalfspacing|\\maketitle|\\tableofcontents/g, "")
-      .replace(/\\\\|\\newline/g, "\n")
       .trim();
 
     // Extract any introductory text before the first section
-    const firstSectionIndex = cleanContent.indexOf("\\section{");
+    const firstSectionMatch = /\\section\*?\{/.exec(cleanContent);
+    const firstSectionIndex = firstSectionMatch?.index ?? -1;
     if (firstSectionIndex > 0) {
       const introText = cleanContent.substring(0, firstSectionIndex).trim();
       if (introText) {
@@ -181,7 +277,7 @@ export function generateAndDownloadPdf(projectTitle: string, latex: string) {
 
     while ((secMatch = sectionRegex.exec(cleanContent)) !== null) {
       sections.push({
-        title: secMatch[1].trim(),
+        title: stripLatexCommands(secMatch[1]),
         body: secMatch[2].trim(),
       });
     }
@@ -218,32 +314,17 @@ export function generateAndDownloadPdf(projectTitle: string, latex: string) {
       doc.text(sec.title, margin, y);
       y += 8;
 
-      // Clean the section body text from remaining LaTeX markers
-      const cleanBody = sec.body
-        .replace(/\\cite\{[^}]+\}/g, "[Ref]")
-        .replace(/\\includegraphics[\s\S]*?(\}|$)/g, "[UML Architecture Diagram]")
-        .replace(/\\label\{[^}]+\}/g, "")
-        .replace(/\\ref\{[^}]+\}/g, "[Fig]")
-        .replace(/\\bibliographystyle[\s\S]*/g, "")
-        .replace(/\\bibliography[\s\S]*/g, "")
-        .replace(/\\(textbf|textit|texttt|emph|url|href)\{([^}]+)\}/g, "$2") // clean common formatting commands
-        .replace(/\\[a-zA-Z]+\{([^}]+)\}/g, "$1") // general clean of other commands
-        .replace(/[\{\}]/g, "") // strip any stray braces
-        .trim();
-
-      // Split body into lines and wrap
       doc.setFont("times", "normal");
       doc.setFontSize(11);
       doc.setTextColor(51, 65, 85);
       
-      const paragraphs = cleanBody.split("\n\n");
-      paragraphs.forEach((p) => {
-        const cleanParagraph = p.trim().replace(/\s+/g, " ");
-        if (!cleanParagraph) return;
-
-        const wrappedLines = doc.splitTextToSize(cleanParagraph, contentWidth);
+      const blocks = parseBlocks(sec.body);
+      blocks.forEach((block) => {
+        const left = block.type === "list-item" ? margin + 7 : margin;
+        const width = block.type === "list-item" ? contentWidth - 7 : contentWidth;
+        const wrappedLines = doc.splitTextToSize(block.text, width);
         
-        wrappedLines.forEach((line: string) => {
+        wrappedLines.forEach((line: string, lineIndex: number) => {
           if (y > pageHeight - 25) {
             doc.addPage();
             currentPage++;
@@ -261,11 +342,15 @@ export function generateAndDownloadPdf(projectTitle: string, latex: string) {
             doc.setFontSize(11);
             doc.setTextColor(51, 65, 85);
           }
-          doc.text(line, margin, y);
+          if (block.type === "list-item" && lineIndex === 0) {
+            doc.setFillColor(71, 85, 105);
+            doc.circle(margin + 2, y - 1.4, 0.75, "F");
+          }
+          doc.text(line, left, y);
           y += 6.5; // Line spacing (1.5x equivalent)
         });
         
-        y += 4; // Spacing between paragraphs
+        y += block.type === "list-item" ? 2 : 4; // Spacing between blocks
       });
 
       y += 6; // Spacing after section
