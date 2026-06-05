@@ -93,7 +93,7 @@ function SettingsView({ user }: { user: any }) {
             <Palette className="h-5 w-5 text-primary" /> Theme & Appearance
           </CardTitle>
           <p className="text-sm text-muted-foreground">
-            Customize the platform's visual appearance and color accents.
+            Customize the platform&apos;s visual appearance and color accents.
           </p>
         </CardHeader>
         <CardContent className="space-y-6">
@@ -189,7 +189,7 @@ function SettingsView({ user }: { user: any }) {
               className="font-mono"
             />
             <p className="text-xs text-muted-foreground">
-              If left blank, the platform will use the system's default API key (if configured).
+              If left blank, the platform will use the system&apos;s default API key (if configured).
             </p>
           </div>
           <div className="flex items-center gap-3">

@@ -1,3 +1,5 @@
+import type { CompileResult, Report } from "./types";
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "https://reportai-ytsn.onrender.com/api/v1";
 
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -21,15 +23,15 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export async function createReport(projectId: string): Promise<any> {
+export async function createReport(projectId: string): Promise<Report> {
   return api(`/reports/project/${projectId}/latex`, { method: "POST" });
 }
 
-export async function compileReport(reportId: string): Promise<any> {
+export async function compileReport(reportId: string): Promise<CompileResult> {
   return api(`/reports/${reportId}/compile`, { method: "POST" });
 }
 
-export async function applyFix(reportId: string, sectionId: string, oldFragment: string, newFragment: string): Promise<any> {
+export async function applyFix(reportId: string, sectionId: string, oldFragment: string, newFragment: string): Promise<{ ok: boolean }> {
   return api(`/reports/${reportId}/fix`, {
     method: "POST",
     body: JSON.stringify({ section_id: sectionId, old_fragment: oldFragment, new_fragment: newFragment }),
