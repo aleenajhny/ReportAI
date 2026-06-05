@@ -509,7 +509,6 @@ Ensure the questions cover the core methodology, architecture/design, implementa
 def research_assist(
     payload: ResearchAssistRequest,
     x_openai_api_key: str | None = Header(None, alias="X-OpenAI-API-Key"),
-    user: User | None = Depends(get_current_user),
 ) -> dict:
     return AIContentService().research_assist(
         prompt=payload.prompt,
