@@ -3,13 +3,14 @@
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
-import { BarChart3, FileText, FolderKanban, LayoutDashboard, Settings, WandSparkles } from "lucide-react";
+import { BarChart3, FileText, FolderKanban, LayoutDashboard, Settings, User, WandSparkles } from "lucide-react";
 
 const nav = [
   { href: "/dashboard?tab=dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/dashboard?tab=projects", label: "Projects", icon: FolderKanban },
   { href: "/editor", label: "Live Editor", icon: FileText },
   { href: "/dashboard?tab=quality", label: "Quality", icon: BarChart3 },
+  { href: "/dashboard?tab=profile", label: "Profile", icon: User },
   { href: "/dashboard?tab=settings", label: "Settings", icon: Settings },
 ];
 

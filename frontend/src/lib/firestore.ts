@@ -10,7 +10,7 @@ import {
   setDoc,
   updateDoc,
 } from "firebase/firestore";
-import { ref, uploadBytes } from "firebase/storage";
+import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { getFirebaseDb, getFirebaseStorage } from "@/lib/firebase";
 import type { Project, QualityScore } from "@/lib/types";
 
@@ -122,4 +122,25 @@ export async function saveLearnedTemplate(
   });
   await updateProject(userId, projectId, { status: "template_uploaded" });
 }
+
+export async function getUserProfile(userId: string) {
+  const snapshot = await getDoc(doc(getFirebaseDb(), "users", userId));
+  return snapshot.exists() ? snapshot.data() : null;
+}
+
+export async function saveUserProfile(userId: string, data: any) {
+  await setDoc(doc(getFirebaseDb(), "users", userId), {
+    ...data,
+    updated_at: serverTimestamp(),
+  }, { merge: true });
+}
+
+export async function uploadAvatar(userId: string, file: File): Promise<string> {
+  const fileExtension = file.name.split(".").pop() || "png";
+  const key = `users/${userId}/avatars/avatar-${Date.now()}.${fileExtension}`;
+  const storageRef = ref(getFirebaseStorage(), key);
+  await uploadBytes(storageRef, file);
+  return getDownloadURL(storageRef);
+}
+
 
