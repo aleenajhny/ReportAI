@@ -4,10 +4,11 @@ type ParsedSection = { title: string; body: string };
 type RenderBlock = { type: "paragraph"; text: string } | { type: "list-item"; text: string };
 
 function extractCommandContent(source: string, command: string) {
-  const start = source.indexOf(`\\${command}{`);
-  if (start === -1) return "";
+  const pattern = new RegExp(`\\\\${command}\\s*\\*?\\s*\\{`, "i");
+  const match = pattern.exec(source);
+  if (!match) return "";
 
-  const contentStart = start + command.length + 2;
+  const contentStart = match.index + match[0].length;
   let depth = 1;
 
   for (let index = contentStart; index < source.length; index++) {
@@ -48,19 +49,20 @@ function stripLatexCommands(value: string) {
   let text = normalizeLatexText(value);
 
   text = text
-    .replace(/\\cite(?:\[[^\]]*\])?\{[^}]*\}/g, "[Ref]")
-    .replace(/\\includegraphics(?:\[[^\]]*\])?\{[^}]*\}/g, "[Diagram]")
-    .replace(/\\(?:label|ref|pageref|bibliographystyle|bibliography)\{[^}]*\}/g, "")
-    .replace(/\\(?:begin|end)\{[^}]+\}(?:\[[^\]]*\])?/g, "")
-    .replace(/\blstlisting(?:\[[^\]]*\])?/gi, "")
+    .replace(/\\\\|\\newline/g, " ")
+    .replace(/\\cite\s*(?:\[[^\]]*\])?\s*\{[^}]*\}/g, "[Ref]")
+    .replace(/\\includegraphics\s*(?:\[[^\]]*\])?\s*\{[^}]*\}/g, "[Diagram]")
+    .replace(/\\(?:label|ref|pageref|bibliographystyle|bibliography)\s*\{[^}]*\}/g, "")
+    .replace(/\\(?:begin|end)\s*\{[^}]+\}\s*(?:\[[^\]]*\])?/g, "")
+    .replace(/\blstlisting\s*(?:\[[^\]]*\])?/gi, "")
     .replace(/\[[^\]]*(?:label|leftmargin|language|caption)\s*=[^\]]*\]\s*/gi, "")
     .replace(/\\(?:onehalfspacing|maketitle|tableofcontents|clearpage|newpage|noindent|centering)\b/g, "")
-    .replace(/\\(?:textbf|textit|texttt|emph|underline|url)\{([^{}]*)\}/g, "$1")
-    .replace(/\\(?:textbf|textit|texttt|emph|underline|url)\{?/g, "")
-    .replace(/\\href\{[^{}]*\}\{([^{}]*)\}/g, "$1")
-    .replace(/\\(?:chapter|section|subsection|subsubsection)\*?\{([^{}]*)\}/g, "$1")
+    .replace(/\\(?:textbf|textit|texttt|emph|underline|url)\s*\{([^{}]*)\}/g, "$1")
+    .replace(/\\(?:textbf|textit|texttt|emph|underline|url)\s*\{?/g, "")
+    .replace(/\\href\s*\{[^{}]*\}\s*\{([^{}]*)\}/g, "$1")
+    .replace(/\\(?:chapter|section|subsection|subsubsection)\s*\*?\s*\{([^{}]*)\}/g, "$1")
     .replace(/\$([^$]*)\$/g, "$1")
-    .replace(/\\[a-zA-Z]+\*?(?:\[[^\]]*\])?(?:\{([^{}]*)\})?/g, "$1")
+    .replace(/\\[a-zA-Z]+\s*\*?\s*(?:\[[^\]]*\])?\s*(?:\{([^{}]*)\})?/g, "$1")
     .replace(/[{}]/g, "")
     .replace(/[ \t]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
@@ -71,8 +73,7 @@ function stripLatexCommands(value: string) {
 
 function cleanPdfTitle(value: string) {
   return stripLatexCommands(value)
-    .replace(/\\?textbf\{?/gi, "")
-    .replace(/\\?[a-z]+\*?\{?/gi, "")
+    .replace(/\\[a-zA-Z]+\*?\{?/g, "")
     .replace(/[{}]/g, "")
     .replace(/\s+/g, " ")
     .trim();
@@ -134,7 +135,7 @@ export function generateAndDownloadPdf(projectTitle: string, latex: string) {
   const parsedTitle = cleanPdfTitle(titleContent || projectTitle) || cleanPdfTitle(projectTitle) || "Project Report";
 
   // Extract Chapters
-  const chapterRegex = /\\chapter\*?\{([^}]+)\}([\s\S]*?)(?=\\chapter\*?\{|\s*\\bibliographystyle|\s*\\end\{document\})/g;
+  const chapterRegex = /\\chapter\s*\*?\s*\{([^}]+)\}([\s\S]*?)(?=\\chapter\s*\*?\s*\{|\s*\\bibliographystyle|\s*\\end\{document\})/g;
   const chapters: { title: string; content: string }[] = [];
   let match;
   while ((match = chapterRegex.exec(latex)) !== null) {
@@ -272,7 +273,7 @@ export function generateAndDownloadPdf(projectTitle: string, latex: string) {
     
     // Parse Sections within Chapter Content
     // A regex to match \section{Section Title}
-    const sectionRegex = /\\section\*?\{([^}]+)\}([\s\S]*?)(?=\\section\*?\{|$)/g;
+    const sectionRegex = /\\section\s*\*?\s*\{([^}]+)\}([\s\S]*?)(?=\\section\s*\*?\s*\{|$)/g;
     const sections: ParsedSection[] = [];
     let secMatch;
     
@@ -282,7 +283,7 @@ export function generateAndDownloadPdf(projectTitle: string, latex: string) {
       .trim();
 
     // Extract any introductory text before the first section
-    const firstSectionMatch = /\\section\*?\{/.exec(cleanContent);
+    const firstSectionMatch = /\\section\s*\*?\s*\{/.exec(cleanContent);
     const firstSectionIndex = firstSectionMatch?.index ?? -1;
     if (firstSectionIndex > 0) {
       const introText = cleanContent.substring(0, firstSectionIndex).trim();
