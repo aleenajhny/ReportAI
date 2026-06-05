@@ -21,7 +21,7 @@ import { generateAIQuestions, generateFallbackQuestions } from "@/lib/ai-generat
 import type { Question } from "@/lib/questionnaire";
 import type { Project, QualityScore } from "@/lib/types";
 import { generateAndDownloadPdf } from "@/lib/pdf-generator";
-import { FileDown, Settings, Sparkles, Loader2 } from "lucide-react";
+import { FileDown, Settings, Sparkles, Loader2, RefreshCcw } from "lucide-react";
 import { LatexErrorPanel } from "@/components/latex-error-panel";
 import { compileReport, createReport } from "@/lib/api";
 import { LaTeXError } from "@/lib/types";
