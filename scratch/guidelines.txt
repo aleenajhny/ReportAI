@@ -1,0 +1,11 @@
+Academic Report Guidelines:
+1. Chapters:
+- Abstract: A concise summary of the academic project.
+- Introduction: Background context and project relevance.
+- Methodology: Algorithms, architecture, and design approach.
+- Results: Evaluation metrics, statistics, and graphs.
+- Conclusion: Summary and future scope.
+
+2. Formatting:
+- Citation format: IEEE numeric style.
+- Typography: Times New Roman, 1.5 line spacing.

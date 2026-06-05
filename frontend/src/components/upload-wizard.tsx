@@ -18,6 +18,8 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { uploadTemplateFile, getProject, saveQuestionnaire, saveLearnedTemplate } from "@/lib/firestore";
+import { getOpenAiApiKey } from "@/lib/utils";
+
 
 const steps = ["Upload", "Extract", "Learn", "Validate"];
 
@@ -69,8 +71,9 @@ export function UploadWizard({ projectId, onSuccess }: { projectId?: string; onS
       }
       const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "https://reportai-ytsn.onrender.com/api/v1";
       const headers: Record<string, string> = {};
-      if (process.env.NEXT_PUBLIC_OPENAI_API_KEY) {
-        headers["X-OpenAI-API-Key"] = process.env.NEXT_PUBLIC_OPENAI_API_KEY;
+      const apiKey = getOpenAiApiKey();
+      if (apiKey) {
+        headers["X-OpenAI-API-Key"] = apiKey;
       }
       const res = await fetch(`${API_URL}/templates/learn-public`, {
         method: "POST",

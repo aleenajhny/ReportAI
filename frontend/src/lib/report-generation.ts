@@ -1,5 +1,6 @@
 import type { Project, QualityScore } from "@/lib/types";
 import type { Question } from "./questionnaire";
+import { getOpenAiApiKey } from "@/lib/utils";
 
 export const reportSections = [
   "Abstract",
@@ -79,8 +80,9 @@ export async function enhanceAnswersWithAI(
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
     };
-    if (process.env.NEXT_PUBLIC_OPENAI_API_KEY) {
-      headers["X-OpenAI-API-Key"] = process.env.NEXT_PUBLIC_OPENAI_API_KEY;
+    const apiKey = getOpenAiApiKey();
+    if (apiKey) {
+      headers["X-OpenAI-API-Key"] = apiKey;
     }
 
     const response = await fetch(`${API_URL}/generation/enhance-answers-public`, {
@@ -127,8 +129,9 @@ export async function generateLatexWithAI(
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
     };
-    if (process.env.NEXT_PUBLIC_OPENAI_API_KEY) {
-      headers["X-OpenAI-API-Key"] = process.env.NEXT_PUBLIC_OPENAI_API_KEY;
+    const apiKey = getOpenAiApiKey();
+    if (apiKey) {
+      headers["X-OpenAI-API-Key"] = apiKey;
     }
 
     const response = await fetch(`${API_URL}/generation/generate-report-public`, {

@@ -1,4 +1,5 @@
 import type { Question } from "./questionnaire";
+import { getOpenAiApiKey } from "@/lib/utils";
 
 // Smart local fallback question generator based on keywords
 export function generateFallbackQuestions(title: string, description: string, domain: string): Question[] {
@@ -56,8 +57,9 @@ export async function generateAIQuestions(
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
     };
-    if (process.env.NEXT_PUBLIC_OPENAI_API_KEY) {
-      headers["X-OpenAI-API-Key"] = process.env.NEXT_PUBLIC_OPENAI_API_KEY;
+    const apiKey = getOpenAiApiKey();
+    if (apiKey) {
+      headers["X-OpenAI-API-Key"] = apiKey;
     }
 
     const response = await fetch(`${API_URL}/generation/questions-public`, {
