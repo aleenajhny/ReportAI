@@ -2,6 +2,7 @@ from functools import lru_cache
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import AliasChoices
 
 
 class Settings(BaseSettings):
@@ -11,7 +12,13 @@ class Settings(BaseSettings):
     jwt_secret_key: str = Field(default="dev-secret-change-me", min_length=16)
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60
-    openai_api_key: str | None = None
+    openai_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "OPENAI_API_KEY",
+            "GEMINI_API_KEY",
+        ),
+    )
     openai_model: str = "gpt-4o-mini"
     s3_endpoint_url: str | None = None
     s3_access_key_id: str | None = None

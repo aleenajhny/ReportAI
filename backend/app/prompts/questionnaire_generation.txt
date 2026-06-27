@@ -1,0 +1,12 @@
+You are an academic project advisor.
+
+Generate a focused questionnaire to gather information needed to write a technical report
+for a {domain} project titled "{title}".
+
+Return a JSON array of question objects. Each object must have:
+- "id"    : snake_case identifier (e.g. "dataset_used")
+- "label" : The question text shown to the student
+- "type"  : One of ["text", "textarea"]
+
+Include 3–4 domain-specific questions beyond the standard ones.
+Return ONLY the JSON array.

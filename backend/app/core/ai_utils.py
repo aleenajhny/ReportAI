@@ -1,28 +1,65 @@
 from openai import OpenAI
 from app.core.config import settings
 
-def get_openai_client_and_model(api_key: str | None = None) -> tuple[OpenAI, str]:
+
+PROVIDER_MODELS = {
+    "openai": getattr(settings, "openai_model", "gpt-4o-mini"),
+    "gemini": "gemini-2.5-flash",
+    "groq": "llama-3.3-70b-versatile",
+}
+
+
+def get_openai_client_and_model(
+    api_key: str | None = None,
+) -> tuple[OpenAI, str]:
     """
-    Returns an OpenAI client and the appropriate model name based on the provided API key.
-    If no API key is provided, it uses the one from settings.
+    Returns an OpenAI-compatible client.
+
+    Supports:
+    - OpenAI
+    - Google Gemini
+    - Groq
     """
+
     key = api_key or settings.openai_api_key
+
     if not key:
-        raise ValueError("OpenAI API key not configured.")
-        
+        raise ValueError("No AI API key configured.")
+
+    provider = "openai"
     base_url = None
-    model = settings.openai_model
-    
-    if key.startswith("AIzaSy"):
+
+    # -----------------------------
+    # Google Gemini
+    # Supports both old AIza... keys
+    # and new AQ.... AI Studio keys
+    # -----------------------------
+    if key.startswith(("AIza", "AQ.")):
+        provider = "gemini"
         base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
-        model = "gemini-2.0-flash"
+
+    # -----------------------------
+    # Groq
+    # -----------------------------
     elif key.startswith("gsk_"):
+        provider = "groq"
         base_url = "https://api.groq.com/openai/v1"
-        model = "llama-3.3-70b-versatile"
-    elif key.startswith("sk-"):
-        # standard OpenAI
-        if model == "gpt-4.1-mini": # Fix legacy typo if it persists
-            model = "gpt-4o-mini"
-        
-    client = OpenAI(api_key=key, base_url=base_url)
-    return client, model
+
+    # -----------------------------
+    # OpenAI
+    # -----------------------------
+    elif key.startswith(("sk-", "sk-proj-")):
+        provider = "openai"
+
+    print("=" * 70)
+    print(f"AI Provider : {provider}")
+    print(f"Model       : {PROVIDER_MODELS[provider]}")
+    print(f"Base URL    : {base_url}")
+    print("=" * 70)
+
+    client = OpenAI(
+        api_key=key,
+        base_url=base_url,
+    )
+
+    return client, PROVIDER_MODELS[provider]

@@ -1,0 +1,21 @@
+You are a professional academic writer. Generate highly detailed academic content for the following report sections:
+{sections}
+
+Project Metadata:
+Title: {title}
+Domain: {domain}
+
+Project Facts:
+{project_facts}
+
+Guidelines:
+- Length: {length}
+- Tone: Academic, formal, technical
+- Format: LaTeX compatible
+- Citations: Include placeholder citations like [1], [2] where appropriate.
+
+Return a JSON array of objects, where each object has:
+  "section": "The section name"
+  "content": "The generated LaTeX content"
+
+Return ONLY the JSON array.

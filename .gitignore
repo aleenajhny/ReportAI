@@ -1,23 +1,58 @@
+# Environment
 .env
 .env.*
 !.env.example
-!.firebaserc.example
+
+# Python
 .venv/
+venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+
+# Node
 node_modules/
 .next/
-out/
 dist/
+out/
+
+# Coverage
 coverage/
+
+# Logs
 *.log
-*.pdf
+
+# LaTeX
 *.aux
-*.fls
+*.bbl
+*.bcf
+*.blg
 *.fdb_latexmk
+*.fls
+*.lof
+*.lot
+*.toc
+*.out
+*.synctex.gz
+
+# Generated PDFs
+*.pdf
+
+# VS Code
+.vscode/
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+
+# Vercel
 .vercel/
+
+# Firebase
 firebase-debug.log
 firestore-debug.log
 ui-debug.log

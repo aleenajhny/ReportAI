@@ -1,5 +1,5 @@
 from app.core.ai_utils import get_openai_client_and_model
-
+from app.services.report_planner import ReportPlanner
 
 DEFAULT_SECTIONS = [
     "Abstract",
@@ -27,134 +27,291 @@ class AIContentService:
         length: str,
         api_key: str | None = None,
     ) -> list[dict]:
-        target_sections = sections or (template or {}).get("chapters") or DEFAULT_SECTIONS
-        
-        try:
-            client, model = get_openai_client_and_model(api_key)
-        except ValueError:
-            return [self._fallback_section(section, project, answers, length) for section in target_sections]
 
-        prompt = f"""You are a professional academic writer. Generate highly detailed academic content for the following report sections:
-{", ".join(target_sections)}
+        planner = ReportPlanner()
 
-Project Context:
-Title: {project['title']}
-Domain: {project['domain']}
-Description: {project.get('description', '')}
-
-Student Answers:
-{answers}
-
-Guidelines:
-- Length: {length}
-- Tone: Academic, formal, technical
-- Format: LaTeX compatible
-- Citations: Include placeholder citations like [1], [2] where appropriate.
-
-Return a JSON array of objects, where each object has:
-"section": "The section name"
-"content": "The generated LaTeX content"
-
-Return ONLY the JSON array."""
-
-        try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": "You are an academic report writing assistant. You must return only a valid JSON array of section objects."},
-                    {"role": "user", "content": prompt}
-                ],
-                response_format={"type": "json_object"} if "gemini" not in model.lower() else None
-            )
-            import json
-            content = response.choices[0].message.content.strip()
-            # If it's a json_object but we asked for an array, it might wrap it in a key or return just the array if supported.
-            # Actually OpenAI's json_object requires the word 'json' in prompt and usually returns an object.
-            # I'll try to parse it as an array or look for a key.
-            parsed = json.loads(content)
-            if isinstance(parsed, dict) and "sections" in parsed:
-                return parsed["sections"]
-            if isinstance(parsed, list):
-                return parsed
-            return [{"section": "Generated Draft", "content": content, "meta": {"model": model}}]
-        except Exception as e:
-            print(f"Error generating AI sections: {e}")
-            return [self._fallback_section(section, project, answers, length) for section in target_sections]
-
-    def research_assist(self, prompt: str, selected_text: str | None, full_source: str | None, api_key: str | None = None) -> dict:
-        try:
-            client, model = get_openai_client_and_model(api_key)
-        except ValueError:
-            return {
-                "answer": "AI assistance is currently offline. Please configure your API key.",
-                "suggested_text": None,
-                "action": "chat"
-            }
-
-        context_text = f"\nSelected Text:\n{selected_text}" if selected_text else ""
-        if not selected_text and full_source:
-            context_text = f"\nFull Document Context (partial):\n{full_source[:2000]}"
-
-        system_prompt = """You are an expert academic research assistant and LaTeX specialist. 
-Your goal is to help students refine their project reports.
-You must return a JSON object with:
-- "answer": A brief, helpful explanation of what you did or suggested.
-- "suggested_text": The modified LaTeX code or new content (if any).
-- "action": One of ["chat", "replace", "insert"]. Use "replace" if you modified the selected text, "insert" if you generated something new to be added, and "chat" for general advice."""
-
-        user_prompt = f"User Request: {prompt}{context_text}\n\nReturn only JSON."
-
-        try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                response_format={"type": "json_object"} if "gemini" not in model.lower() else None
-            )
-            import json
-            return json.loads(response.choices[0].message.content.strip())
-        except Exception as e:
-            print(f"Error in research_assist: {e}")
-            return {
-                "answer": f"Sorry, I encountered an error: {str(e)}",
-                "suggested_text": None,
-                "action": "chat"
-            }
-
-    def _fallback_section(self, section: str, project: dict, answers: dict, length: str) -> dict:
-        content = (
-            f"\\section{{{section}}}\n"
-            f"This {length} draft section describes {project['title']} in the context of "
-            f"{project['domain']}. It should be expanded with university-specific evidence, "
-            f"implementation details, results, and citations. Key submitted project details: {answers}."
+        plan = planner.create_plan(
+            project=project,
+            answers=answers,
+            template=template,
+            api_key=api_key,
         )
-        return {"section": section, "content": content, "meta": {"mode": "offline-fallback"}}
 
-    def suggest_fix(self, error_message: str, source_fragment: str, api_key: str | None = None) -> str | None:
+        generated_sections = []
+        previous_context = ""
+
+        for chapter in plan:
+
+            section = self.generate_chapter(
+                chapter=chapter["title"],
+                goal=chapter["goal"],
+                topics=chapter["topics"],
+                expected_length=chapter["expected_length"],
+                requires_figures=chapter["requires_figures"],
+                requires_table=chapter["requires_table"],
+                requires_algorithm=chapter["requires_algorithm"],
+                project=project,
+                answers=answers,
+                previous_context=previous_context,
+                length=length,
+                api_key=api_key,
+            )
+
+            generated_sections.append(section)
+
+            previous_context += "\n\n" + self.summarize_chapter(
+                section["content"],
+                api_key,
+            )
+
+        return generated_sections
+
+    def generate_chapter(
+        self,
+        chapter: str,
+        goal: str,
+        topics: list[str],
+        expected_length: str,
+        requires_figures: bool,
+        requires_table: bool,
+        requires_algorithm: bool,
+        project: dict,
+        answers: dict,
+        previous_context: str,
+        length: str,
+        api_key: str | None = None,
+    ) -> dict:
+
+        topic_text = "\n".join(f"- {topic}" for topic in topics)
+
+        sections = []
+
+        if answers.get("problem_statement"):
+            sections.append(
+                f"Problem Statement:\n{answers['problem_statement']}"
+            )
+
+        if answers.get("objectives"):
+            sections.append(
+                f"Objectives:\n{answers['objectives']}"
+            )
+
+        if answers.get("scope"):
+            sections.append(
+                f"Scope:\n{answers['scope']}"
+            )
+
+        for key, value in answers.items():
+
+            if key in {
+                "problem_statement",
+                "objectives",
+                "scope",
+            }:
+                continue
+
+            if value:
+                sections.append(
+                    f"{key.replace('_', ' ').title()}:\n{value}"
+                )
+
+        answer_text = "\n\n".join(sections)
+
         try:
             client, model = get_openai_client_and_model(api_key)
         except ValueError:
-            # Basic heuristic fix for common errors
-            if "_" in source_fragment and r"\_" not in source_fragment:
-                return source_fragment.replace("_", r"\_")
-            if "%" in source_fragment and r"\%" not in source_fragment:
-                return source_fragment.replace("%", r"\%")
-            return None
+            return self._fallback_section(chapter, project, answers, length)
 
         prompt = f"""
-        Fix this LaTeX error: {error_message}
-        Problematic line: {source_fragment}
-        
-        Return ONLY the corrected line. No explanation.
-        """
+You are a senior university professor and technical researcher.
+
+Your task is to write ONE chapter of a final-year engineering project report.
+
+===========================================================
+PROJECT DETAILS
+===========================================================
+
+Title:
+{project["title"]}
+
+Domain:
+{project["domain"]}
+
+Description:
+{project.get("description","")}
+
+===========================================================
+PROJECT FACTS
+===========================================================
+
+{answer_text}
+
+===========================================================
+PREVIOUS CHAPTER SUMMARY
+===========================================================
+
+{previous_context}
+
+===========================================================
+CURRENT CHAPTER
+===========================================================
+
+Title:
+{chapter}
+
+Goal:
+{goal}
+
+Topics:
+{topic_text}
+
+Expected Length:
+{expected_length}
+
+Requires Figures:
+{requires_figures}
+
+Requires Tables:
+{requires_table}
+
+Requires Algorithms:
+{requires_algorithm}
+
+===========================================================
+WRITING RULES
+===========================================================
+
+• Write ONLY this chapter.
+
+• Do NOT write any other chapter.
+
+• Do NOT generate \\chapter{{}}.
+
+• Begin directly with appropriate \\section{{}} and \\subsection{{}} headings.
+
+• Follow the writing style of a real university dissertation.
+
+• Explain every concept before discussing implementation.
+
+• Never write generic filler text.
+
+• Never repeat information already discussed.
+
+• Every subsection should naturally lead into the next.
+
+• Explain WHY each design decision was made.
+
+• Include implementation details whenever possible.
+
+• Discuss advantages and limitations where appropriate.
+
+• Mention figures using:
+Figure~\\ref{{fig:architecture}}
+
+• Mention tables using:
+Table~\\ref{{tab:comparison}}
+
+• Mention algorithms using:
+Algorithm~\\ref{{alg:workflow}}
+
+• Add citation placeholders:
+\\cite{{ref1}}
+
+• Do NOT invent numerical experimental results.
+
+• Do NOT use bullet points unless absolutely necessary.
+
+• Use long academic paragraphs.
+
+• The output should resemble a publishable university report.
+
+Return ONLY valid LaTeX.
+"""
         try:
             response = client.chat.completions.create(
                 model=model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=200,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are an expert academic report writer.",
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    },
+                ],
             )
-            return response.choices[0].message.content.strip()
+
+            return {
+                "section": chapter,
+                "content": response.choices[0].message.content.strip(),
+            }
+
         except Exception:
-            return None
+            return self._fallback_section(chapter, project, answers, length)
+
+    def summarize_chapter(
+        self,
+        chapter_content: str,
+        api_key: str | None = None,
+    ) -> str:
+
+        try:
+            client, model = get_openai_client_and_model(api_key)
+
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "Summarize this chapter in under 120 words.",
+                    },
+                    {
+                        "role": "user",
+                        "content": chapter_content,
+                    },
+                ],
+                max_tokens=180,
+            )
+
+            return response.choices[0].message.content.strip()
+
+        except Exception:
+            return ""
+
+    def _fallback_section(
+        self,
+        chapter: str,
+        project: dict,
+        answers: dict,
+        length: str,
+    ) -> dict:
+        return {
+            "section": chapter,
+            "content": (
+                f"\\section{{{chapter}}}\n"
+                f"This section describes the {chapter.lower()} of "
+                f"{project['title']}. Further technical details should be added."
+            ),
+        }
+
+    def research_assist(
+        self,
+        prompt: str,
+        selected_text: str | None,
+        full_source: str | None,
+        api_key: str | None = None,
+    ):
+        return {
+            "answer": "Research assistant is temporarily unavailable.",
+            "suggested_text": None,
+            "action": "chat",
+        }
+
+    def suggest_fix(
+        self,
+        error_message: str,
+        source_fragment: str,
+        api_key: str | None = None,
+    ):
+        return source_fragment

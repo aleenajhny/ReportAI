@@ -1,0 +1,6 @@
+Fix this LaTeX compilation error.
+
+Error  : {error_message}
+Line   : {source_fragment}
+
+Return ONLY the corrected line. No explanation.

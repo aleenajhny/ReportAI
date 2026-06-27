@@ -56,11 +56,12 @@ async def learn_template(
         )
         documents.append(processor.extract(upload.filename or "", content))
 
-    profile, confidence = TemplateLearningService().learn(documents)
+    # learn() now returns (FormatTemplate, ContentReferenceTemplate, float)
+    format_template, _content_ref, confidence = TemplateLearningService().learn(documents)
     template = Template(
         project_id=project_id,
         name="Learned University Template",
-        profile=profile,
+        profile=format_template.model_dump(),
         confidence=confidence,
     )
     db.add(template)
@@ -82,33 +83,32 @@ async def learn_template_public(
         documents.append(processor.extract(upload.filename or "", content))
 
     full_text = "\n\n".join(doc.text for doc in documents)[:15000]
-    
+
     from app.core.config import settings
-    from app.services.template_learning import TemplateLearningService
-    
+
     api_key = x_openai_api_key or settings.openai_api_key
+
+    # ── offline / no-key path ─────────────────────────────────────────────────
     if not api_key:
-        profile, confidence = TemplateLearningService().learn(documents)
+        format_template, _content_ref, confidence = TemplateLearningService().learn(documents)
+        profile = format_template.model_dump()
         questions = [
             {"id": "problem_statement", "label": "What specific problem does your project solve?", "type": "textarea"},
-            {"id": "objectives", "label": "What are the primary objectives of the project?", "type": "textarea"}
+            {"id": "objectives", "label": "What are the primary objectives of the project?", "type": "textarea"},
         ]
-        for chapter in profile.get("chapters", []):
-            if chapter.lower() not in ["abstract", "acknowledgement", "conclusion"]:
+        for chapter in format_template.chapters:
+            if chapter.lower() not in {"abstract", "acknowledgement", "conclusion"}:
                 questions.append({
                     "id": f"details_{chapter.lower().replace(' ', '_')}",
                     "label": f"Describe the key aspects to include in the '{chapter}' section.",
-                    "type": "textarea"
+                    "type": "textarea",
                 })
-        return {
-            "profile": profile,
-            "confidence": confidence,
-            "questions": questions
-        }
+        return {"profile": profile, "confidence": confidence, "questions": questions}
 
+    # ── AI-assisted path ──────────────────────────────────────────────────────
     client, model = get_openai_client_and_model(api_key)
     prompt = f"""Analyze the following university report guidelines / sample document text and learn the required structure and styling parameters.
-    
+
 Guidelines Text:
 {full_text}
 
@@ -129,30 +129,28 @@ Return ONLY the raw JSON object. No explanations, no markdown styling."""
             model=model,
             messages=[
                 {"role": "system", "content": "You are a university report analysis bot. You must extract report parameters and return only valid JSON output."},
-                {"role": "user", "content": prompt}
+                {"role": "user", "content": prompt},
             ],
-            response_format={ "type": "json_object" }
+            response_format={"type": "json_object"},
         )
         import json
         result = json.loads(response.choices[0].message.content.strip())
         profile = {
             "chapters": result.get("chapters", ["Abstract", "Introduction", "Literature Review", "Methodology", "Results", "Conclusion"]),
-            "citation": result.get("citation", "IEEE"),
+            "citation_style": result.get("citation", "IEEE"),
             "font": result.get("font", "Times New Roman"),
             "spacing": result.get("spacing", "1.5"),
             "heading_hierarchy": ["chapter", "section", "subsection"],
             "page_layout": {"paper": "A4", "margin": "1in"},
         }
-        return {
-            "profile": profile,
-            "confidence": 0.95,
-            "questions": result.get("questions", [])
-        }
+        return {"profile": profile, "confidence": 0.95, "questions": result.get("questions", [])}
+
     except Exception as e:
         print(f"Error learning template via OpenAI: {e}")
-        profile, confidence = TemplateLearningService().learn(documents)
+        # Fall back to heuristic learning — profile was never set above, so build it here
+        format_template, _content_ref, confidence = TemplateLearningService().learn(documents)
         return {
-            "profile": profile,
+            "profile": format_template.model_dump(),
             "confidence": confidence,
-            "questions": []
+            "questions": [],
         }

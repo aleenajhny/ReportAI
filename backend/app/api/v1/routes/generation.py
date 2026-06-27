@@ -5,7 +5,6 @@ from fastapi import APIRouter, Depends, status, Header
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from openai import OpenAI
 
 from app.core.config import settings
 from app.core.ai_utils import get_openai_client_and_model
@@ -20,6 +19,8 @@ from app.services.ai_content import AIContentService
 
 router = APIRouter()
 
+
+# ── Request schemas ───────────────────────────────────────────────────────────
 
 class ProjectInfo(BaseModel):
     title: str
@@ -58,16 +59,297 @@ class GenerateQuestionsRequest(BaseModel):
     templateProfile: TemplateProfileInfo | None = None
 
 
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+# These are the only valid top-level chapters for an academic report.
+# We NEVER use templateProfile.chapters directly as chapters — they may
+# contain questionnaire question labels (the bug shown in the PDF).
+DEFAULT_CHAPTERS = [
+    "Introduction",
+    "System Study",
+    "System Requirements",
+    "System Design",
+    "Implementation",
+    "Testing",
+    "Results",
+    "Conclusion",
+    "Future Scope",
+]
+
+# Recognised chapter names — used to validate templateProfile.chapters
+# before trusting them. If the list contains non-chapter strings
+# (like "Problem Statement", "Objectives" etc.) we ignore it entirely.
+VALID_CHAPTER_KEYWORDS = {
+    "abstract", "introduction", "literature", "review", "study",
+    "analysis", "design", "architecture", "methodology", "implementation",
+    "testing", "results", "discussion", "conclusion", "future", "scope",
+    "requirements", "srs", "system", "background", "overview",
+    "related", "work", "evaluation", "performance",
+}
+
+# Answer keys that map to each chapter
+CHAPTER_ANSWER_KEYS: dict[str, list[str]] = {
+    "Abstract":             ["abstract", "overview"],
+    "Introduction":         ["problem_statement", "objectives", "scope", "background", "motivation", "introduction"],
+    "System Study":         ["existing_system", "proposed_system", "feasibility", "system_study",
+                             "technical_feasibility", "economic_feasibility", "operational_feasibility"],
+    "Literature Review":    ["literature_review", "related_work", "prior_work", "survey", "background"],
+    "System Requirements":  ["functional_requirements", "non_functional_requirements", "requirements",
+                             "hardware_requirements", "software_requirements", "system_requirements"],
+    "System Analysis":      ["system_analysis", "dfd", "use_case"],
+    "System Design":        ["system_design", "database_design", "architecture", "hardware_architecture",
+                             "software_architecture", "tech_stack", "database", "uml", "er_diagram"],
+    "Methodology":          ["methodology", "algorithm", "approach", "model_architecture",
+                             "system_architecture", "implementation_tools", "dataset", "model"],
+    "Implementation":       ["implementation", "hardware_protocol", "power_control",
+                             "code_structure", "sensors", "controller", "protocol", "tools",
+                             "technology", "tech_stack"],
+    "Testing":              ["testing_methods", "test_cases", "test_results", "evaluation", "testing"],
+    "Results":              ["results", "evaluation_metrics", "performance", "outcomes",
+                             "comparison", "accuracy"],
+    "Conclusion":           ["conclusion", "summary", "findings"],
+    "Future Scope":         ["future_scope", "future_work", "enhancements", "limitations", "future"],
+}
+
+# Keys that must only match exactly (no substring bleed)
+EXACT_ONLY_KEYS = {"scope", "model", "database", "summary", "survey", "tools", "background"}
+
 
 def is_nil_answer(value: str) -> bool:
     if not value:
         return True
-    clean = value.strip().lower()
-    return clean in [
-        "", "nil", "none", "nothing", "n/a", "na", 
-        "not applicable", "null", "no", "none.", "nil."
-    ]
+    return value.strip().lower() in {
+        "", "nil", "none", "nothing", "n/a", "na",
+        "not applicable", "null", "no", "none.", "nil.",
+    }
 
+
+def _validate_chapters(chapters: list[str] | None) -> list[str] | None:
+    """
+    Return chapters only if they look like real academic chapter names.
+    Rejects lists that are actually questionnaire question labels.
+    """
+    if not chapters:
+        return None
+    valid_count = sum(
+        1 for c in chapters
+        if any(kw in c.lower() for kw in VALID_CHAPTER_KEYWORDS)
+    )
+    # Require at least 60% of entries to look like real chapter names
+    if valid_count / len(chapters) < 0.6:
+        return None
+    # Also reject if any entry is suspiciously long (question labels are long)
+    if any(len(c) > 40 for c in chapters):
+        return None
+    return chapters
+
+
+def _collect_answers_for_chapter(chapter: str, answers: dict[str, str]) -> list[tuple[str, str]]:
+    matched: set[str] = set()
+    result: list[tuple[str, str]] = []
+    target_keys = CHAPTER_ANSWER_KEYS.get(chapter, [chapter.lower().replace(" ", "_")])
+
+    for target in target_keys:
+        for ans_key, ans_val in answers.items():
+            if ans_key in matched or is_nil_answer(ans_val):
+                continue
+            if ans_key == target:
+                matched.add(ans_key)
+                result.append((_fmt_key(ans_key), ans_val.strip()))
+            elif ans_key not in EXACT_ONLY_KEYS and target not in EXACT_ONLY_KEYS:
+                if target in ans_key or (len(ans_key) > 4 and ans_key in target):
+                    matched.add(ans_key)
+                    result.append((_fmt_key(ans_key), ans_val.strip()))
+    return result
+
+
+def _fmt_key(k: str) -> str:
+    return k.replace("_", " ").title()
+
+
+# ── Chapter intro paragraphs ──────────────────────────────────────────────────
+
+_INTROS: dict[str, str] = {
+    "Abstract": (
+        r"This report presents the design, development, and evaluation of "
+        r"\textbf{TITLE}, a project in the domain of DOMAIN. "
+        r"The work addresses a focused problem, proposes a systematic solution, "
+        r"and validates outcomes through structured testing and analysis."
+    ),
+    "Introduction": (
+        r"This chapter establishes the context and motivation for \textbf{TITLE}. "
+        r"It outlines the identified problem, the scope of the work, key objectives, "
+        r"and the structural organisation of this report."
+    ),
+    "System Study": (
+        r"This chapter presents a detailed study of the existing system, identifies "
+        r"its limitations, and describes the proposed system for \textbf{TITLE}. "
+        r"A feasibility study is also included to evaluate the practicability of the solution."
+    ),
+    "Literature Review": (
+        r"A systematic review of existing literature and prior research relevant to "
+        r"\textbf{TITLE} was conducted to identify gaps and inform design decisions."
+    ),
+    "System Requirements": (
+        r"This chapter documents the functional and non-functional requirements "
+        r"for \textbf{TITLE}, including hardware and software specifications."
+    ),
+    "System Analysis": (
+        r"This chapter presents the requirements analysis, data flow diagrams, "
+        r"and use-case models developed for \textbf{TITLE}."
+    ),
+    "System Design": (
+        r"The system design chapter details the architectural blueprint, "
+        r"database schemas, and component interactions for \textbf{TITLE}."
+    ),
+    "Methodology": (
+        r"This chapter describes the theoretical foundations, algorithms, "
+        r"and experimental configurations adopted to develop \textbf{TITLE}."
+    ),
+    "Implementation": (
+        r"The implementation chapter documents the development environment, "
+        r"tools, technologies, and integration steps for \textbf{TITLE}."
+    ),
+    "Testing": (
+        r"Validation and verification tests were systematically conducted to "
+        r"confirm the correctness and reliability of \textbf{TITLE}. "
+        r"This chapter covers unit testing, integration testing, and scenario-based verification."
+    ),
+    "Results": (
+        r"This chapter presents the experimental outcomes, performance metrics, "
+        r"and comparative evaluations obtained from testing \textbf{TITLE}."
+    ),
+    "Conclusion": (
+        r"This chapter summarises the research contributions, outcomes achieved, "
+        r"and lessons learned during the development of \textbf{TITLE}."
+    ),
+    "Future Scope": (
+        r"This chapter outlines potential enhancements, scalability improvements, "
+        r"and research directions that could extend \textbf{TITLE} in future work."
+    ),
+}
+
+_GENERIC_INTRO = (
+    r"This chapter presents the SECTION aspects of \textbf{TITLE}, covering "
+    r"the key design decisions, implementation details, and evaluation criteria "
+    r"relevant to this phase of the project."
+)
+
+
+def _intro(chapter: str, title: str, domain: str) -> str:
+    tpl = _INTROS.get(chapter, _GENERIC_INTRO)
+    return tpl.replace("TITLE", title).replace("DOMAIN", domain).replace("SECTION", chapter.lower())
+
+
+# ── Fallback LaTeX ────────────────────────────────────────────────────────────
+
+def _build_fallback_latex(payload: "GenerateReportRequest") -> str:
+    title = payload.project.title
+    domain = payload.project.domain
+    description = payload.project.description
+
+    raw_chapters = payload.templateProfile.chapters if payload.templateProfile else None
+    chapters = _validate_chapters(raw_chapters) or DEFAULT_CHAPTERS
+    # Remove front-matter items from body — they're handled separately
+    FRONT_MATTER = {"certificate", "declaration", "acknowledgement",
+                    "table of contents", "contents", "list of figures", "list of tables"}
+    body_chapters = [c for c in chapters if c.lower() not in FRONT_MATTER]
+
+    spacing_cmd = _spacing(payload.templateProfile.spacing if payload.templateProfile else None)
+    bib = _bib(payload.templateProfile.citation if payload.templateProfile else None)
+
+    # Front matter — note: NO \addcontentsline here, jsPDF renders raw LaTeX as text
+    # so we write clean prose-only front matter the renderer can handle
+    front = rf"""\chapter*{{Certificate}}
+This is to certify that the project report titled \textbf{{{title}}} submitted by the
+student(s) is a bonafide record of work carried out under our supervision in partial
+fulfilment of the requirements for the award of the degree.
+
+\vspace{{2cm}}
+\noindent\textbf{{Project Guide}} \hfill \textbf{{Head of Department}}
+
+\chapter*{{Declaration}}
+I/We hereby declare that the project entitled \textbf{{{title}}} submitted for the
+academic programme is our original work. Any references to other works have been duly cited.
+
+\vspace{{1cm}}
+\noindent\textbf{{Student Signature(s):}} \underline{{\hspace{{5cm}}}}
+
+\chapter*{{Acknowledgement}}
+The authors express sincere gratitude to their project supervisor, department faculty,
+and fellow colleagues whose guidance was invaluable throughout the development of
+\textbf{{{title}}}. Special thanks are extended to the institution for providing the
+necessary resources and infrastructure."""
+
+    # Body chapters
+    body_parts: list[str] = []
+    for chapter in body_chapters:
+        tex = f"\\chapter{{{chapter}}}\n"
+        tex += _intro(chapter, title, domain) + "\n\n"
+
+        if chapter == "Introduction" and description:
+            tex += description + "\n\n"
+
+        answers = _collect_answers_for_chapter(chapter, payload.answers)
+        if answers:
+            for label, value in answers:
+                tex += f"\\section{{{label}}}\n{value}\n\n"
+        elif chapter not in ("Abstract",):
+            tex += (
+                f"\\textit{{Detailed content for the {chapter.lower()} phase "
+                f"will be populated based on project-specific data and evidence.}}\n"
+            )
+        body_parts.append(tex)
+
+    body = "\n\n".join(body_parts)
+
+    return rf"""\documentclass[12pt,a4paper]{{report}}
+\usepackage[margin=1in]{{geometry}}
+\usepackage{{setspace}}
+\usepackage{{hyperref}}
+\usepackage{{titlesec}}
+\usepackage{{parskip}}
+\hypersetup{{colorlinks=true, linkcolor=black, citecolor=black, urlcolor=blue}}
+{spacing_cmd}
+
+\title{{{title}}}
+\author{{}}
+\date{{\today}}
+
+\begin{{document}}
+\maketitle
+\pagenumbering{{roman}}
+
+{front}
+
+\tableofcontents
+\clearpage
+\pagenumbering{{arabic}}
+
+{body}
+
+\bibliographystyle{{{bib}}}
+\bibliography{{references}}
+\end{{document}}"""
+
+
+def _spacing(s: str | None) -> str:
+    try:
+        v = float(s or "1.5")
+        if v >= 1.8: return r"\doublespacing"
+        if v < 1.3:  return r"\singlespacing"
+    except (ValueError, TypeError):
+        pass
+    return r"\onehalfspacing"
+
+
+def _bib(c: str | None) -> str:
+    if c and ("apa" in c.lower() or "harvard" in c.lower()):
+        return "apalike"
+    return "IEEEtran"
+
+
+# ── Routes ────────────────────────────────────────────────────────────────────
 
 @router.post("/project/{project_id}/content", response_model=list[GeneratedSectionRead], status_code=status.HTTP_201_CREATED)
 def generate_content(
@@ -86,13 +368,8 @@ def generate_content(
         .where(Questionnaire.project_id == project_id)
         .order_by(Questionnaire.created_at.desc())
     )
-
     generated = AIContentService().generate_sections(
-        project={
-            "title": project.title,
-            "domain": project.domain,
-            "description": project.description,
-        },
+        project={"title": project.title, "domain": project.domain, "description": project.description},
         template=template.profile if template else None,
         answers=questionnaire.answers if questionnaire else {},
         sections=payload.sections,
@@ -123,84 +400,44 @@ async def enhance_answers_public(
     active_answers = []
     for key, val in payload.answers.items():
         if val and not is_nil_answer(val):
-            q_label = key
-            for q in payload.questions:
-                if q.id == key:
-                    q_label = q.label
-                    break
+            q_label = next((q.label for q in payload.questions if q.id == key), key)
             active_answers.append(f"{q_label}: {val}")
 
     if not active_answers:
-        next_answers = {}
-        for key, val in payload.answers.items():
-            if is_nil_answer(val):
-                next_answers[key] = ""
-            else:
-                next_answers[key] = val
-        return next_answers
-
-    active_answers_str = "\n\n".join(active_answers)
+        return {k: ("" if is_nil_answer(v) else v) for k, v in payload.answers.items()}
 
     api_key = x_openai_api_key or settings.openai_api_key
     if not api_key:
-        next_answers = {}
-        for key, val in payload.answers.items():
-            if is_nil_answer(val):
-                next_answers[key] = ""
-            else:
-                next_answers[key] = val
-        return next_answers
+        return {k: ("" if is_nil_answer(v) else v) for k, v in payload.answers.items()}
 
-    prompt = f"""You are an academic writing assistant. Enhance the following point-form or informal answers provided by a student for their academic project questionnaire.
+    prompt = f"""You are an academic writing assistant. Enhance the following answers for an academic project questionnaire.
 Project Title: {payload.project.title}
 Domain: {payload.project.domain}
 Description: {payload.project.description}
 
-Here are the student's raw answers:
-{active_answers_str}
+Student answers:
+{chr(10).join(active_answers)}
 
-Instructions:
-1. Rewrite each answer into a highly professional, well-structured, formal academic paragraph.
-2. Maintain technical accuracy but enhance vocabulary, grammar, and flow.
-3. Return the output strictly as a JSON object where the keys are the original question IDs (e.g. "problem_statement", "tech_stack") and the values are the rewritten academic paragraphs. Do not return any other text, markdown formatting, or explain anything."""
+Rewrite each answer as a formal academic paragraph. Return a JSON object where keys are the original question IDs and values are the rewritten paragraphs. Return ONLY the JSON object."""
 
     try:
         client, model = get_openai_client_and_model(api_key)
-        response = client.chat.completions.create(
+        kwargs: dict = dict(
             model=model,
             messages=[
-                {
-                    "role": "system",
-                    "content": "You are an academic advisor. You must return only a valid JSON object mapping question IDs to enhanced text paragraphs. Do not return any markdown code blocks, explanations, or other text."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
+                {"role": "system", "content": "Return only a valid JSON object mapping question IDs to enhanced paragraphs."},
+                {"role": "user", "content": prompt},
             ],
-            response_format={ "type": "json_object" }
         )
+        if "gemini" not in model.lower():
+            kwargs["response_format"] = {"type": "json_object"}
+        response = client.chat.completions.create(**kwargs)
         import json
         parsed = json.loads(response.choices[0].message.content.strip())
-        
-        next_answers = {}
-        for key, val in payload.answers.items():
-            if is_nil_answer(val):
-                next_answers[key] = ""
-            elif key in parsed:
-                next_answers[key] = parsed[key]
-            else:
-                next_answers[key] = val
-        return next_answers
+        return {k: ("" if is_nil_answer(v) else parsed.get(k, v)) for k, v in payload.answers.items()}
     except Exception as e:
         print(f"Error enhancing answers: {e}")
-        next_answers = {}
-        for key, val in payload.answers.items():
-            if is_nil_answer(val):
-                next_answers[key] = ""
-            else:
-                next_answers[key] = val
-        return next_answers
+        return {k: ("" if is_nil_answer(v) else v) for k, v in payload.answers.items()}
 
 
 @router.post("/generate-report-public")
@@ -208,301 +445,317 @@ async def generate_report_public(
     payload: GenerateReportRequest,
     x_openai_api_key: str | None = Header(None, alias="X-OpenAI-API-Key"),
 ):
-    active_answers = []
-    for key, val in payload.answers.items():
-        if val and not is_nil_answer(val):
-            q_label = key
-            for q in payload.questions:
-                if q.id == key:
-                    q_label = q.label
-                    break
-            active_answers.append(f"- {q_label}: {val}")
-
-    answers_str = "\n".join(active_answers) if active_answers else "None provided"
-
-    def get_fallback_latex():
-        report_sections = [
-            "Abstract",
-            "Acknowledgement",
-            "Introduction",
-            "Literature Review",
-            "System Analysis",
-            "System Design",
-            "Methodology",
-            "Implementation",
-            "Testing",
-            "Results",
-            "Conclusion",
-            "Future Scope",
-        ]
-        if payload.templateProfile and payload.templateProfile.chapters:
-            report_sections = payload.templateProfile.chapters
-        
-        # Map specific question keys/patterns to LaTeX chapters to avoid duplicate content on all pages
-        chapter_mappings = {
-            "Abstract": ["abstract", "problem_statement"],
-            "Acknowledgement": [],
-            "Introduction": ["objectives", "scope"],
-            "Literature Review": ["literature_review", "background"],
-            "System Analysis": ["system_analysis", "requirements"],
-            "System Design": ["system_design", "hardware_architecture", "tech_stack", "software_architecture", "database_design"],
-            "Methodology": ["methodology", "implementation_tools", "system_architecture"],
-            "Implementation": ["implementation", "hardware_protocol", "power_control"],
-            "Testing": ["testing_methods", "test_cases"],
-            "Results": ["results", "evaluation_metrics"],
-            "Conclusion": ["conclusion"],
-            "Future Scope": ["future_scope"]
-        }
-
-        sections_tex = []
-        for section in report_sections:
-            sec_tex = f"\\chapter{{{section}}}\n"
-            
-            # Gather answers belonging to this section
-            section_keys = chapter_mappings.get(section, [])
-            section_answers = []
-            
-            # For custom sections, attempt dynamic match by substring mapping
-            if not section_keys:
-                normalized_section = section.lower().replace(" ", "_")
-                for ans_key, ans_val in payload.answers.items():
-                    if ans_val and not is_nil_answer(ans_val):
-                        if normalized_section in ans_key or ans_key in normalized_section:
-                            clean_key = ans_key.replace("_", " ").title()
-                            section_answers.append(f"\\textbf{{{clean_key}}}: {ans_val}")
-            else:
-                for key in section_keys:
-                    for ans_key, ans_val in payload.answers.items():
-                        if ans_val and not is_nil_answer(ans_val):
-                            # Prevent 'scope' from incorrectly matching 'future_scope'
-                            if ans_key == key or (ans_key != "scope" and key != "future_scope" and (key in ans_key or ans_key in key)):
-                                clean_key = ans_key.replace("_", " ").title()
-                                section_answers.append(f"\\textbf{{{clean_key}}}: {ans_val}")
-            
-            # Set specific descriptive paragraphs per section to look premium and distinct
-            if section == "Abstract":
-                sec_tex += f"This document presents the project report for \\textbf{{{payload.project.title}}}, an academic work in the {payload.project.domain} domain.\n\n"
-                sec_tex += f"{payload.project.description}\n\n"
-            elif section == "Acknowledgement":
-                sec_tex += f"The authors would like to express their sincere gratitude to project advisors, classmates, and all contributors who provided feedback and assistance during the development of \\textbf{{{payload.project.title}}}.\n\n"
-            elif section == "Introduction":
-                sec_tex += f"The primary focus of this study is the exploration and development of \\textbf{{{payload.project.title}}}. This chapter details the foundational concepts, background, objectives, and project boundaries defined for this academic research.\n\n"
-            elif section == "Literature Review":
-                sec_tex += f"An analysis of prior studies and state-of-the-art developments in the field of {payload.project.domain} was conducted. This chapter reviews the academic theories, methodologies, and frameworks relevant to \\textbf{{{payload.project.title}}}.\n\n"
-            elif section == "System Analysis":
-                sec_tex += f"This chapter outlines the requirements analysis, functional specifications, feasibility study, and data flow modeling executed to formulate the architecture of \\textbf{{{payload.project.title}}}.\n\n"
-            elif section == "System Design":
-                sec_tex += f"The system design presents the structural layout, component boundaries, database schemas, and architectural design patterns selected to construct \\textbf{{{payload.project.title}}}.\n\n"
-            elif section == "Methodology":
-                sec_tex += f"The core methodology describes the theoretical algorithms, processing pipelines, testing models, and experimental layouts configured for the validation of \\textbf{{{payload.project.title}}}.\n\n"
-            elif section == "Implementation":
-                sec_tex += f"This chapter documents the environment setup, API services, libraries, hardware configurations, and code compilation details executed to instantiate the functional prototype of \\textbf{{{payload.project.title}}}.\n\n"
-            elif section == "Testing":
-                sec_tex += f"Validation and verification tests were executed to confirm the operational capability of \\textbf{{{payload.project.title}}}. This includes modular unit tests and systemic integration audits.\n\n"
-            elif section == "Results":
-                sec_tex += f"The performance outcomes, evaluation metrics, comparative tables, and data logs achieved during research trials of \\textbf{{{payload.project.title}}} are presented and analyzed in this section.\n\n"
-            elif section == "Conclusion":
-                sec_tex += f"This chapter concludes the research findings, achievements, and lessons learned during the development of \\textbf{{{payload.project.title}}}.\n\n"
-            elif section == "Future Scope":
-                sec_tex += f"Potential future enhancements, scalability optimizations, and cloud deployment pipelines proposed for \\textbf{{{payload.project.title}}} are outlined in this section.\n\n"
-            else:
-                sec_tex += f"This chapter details the specific research, design paradigms, and analytical evaluations concerning the {section.title()} phase of \\textbf{{{payload.project.title}}}.\n\n"
-
-            if section_answers:
-                sec_tex += "\\section{Project Evidence}\n"
-                sec_tex += "\\\\\n".join(section_answers) + "\n"
-            else:
-                if section not in ["Abstract", "Acknowledgement"]:
-                    sec_tex += f"Further investigations and data compilation for the {section.lower()} phase are ongoing.\n"
-            
-            sections_tex.append(sec_tex)
-        
-        sections_joined = "\n\n".join(sections_tex)
-
-        spacing_tex = "\\onehalfspacing"
-        if payload.templateProfile and payload.templateProfile.spacing:
-            try:
-                sp = float(payload.templateProfile.spacing)
-                if sp >= 1.8:
-                    spacing_tex = "\\doublespacing"
-                elif sp < 1.3:
-                    spacing_tex = "\\singlespacing"
-            except Exception:
-                pass
-
-        bib_style = "IEEEtran"
-        if payload.templateProfile and payload.templateProfile.citation:
-            cit = payload.templateProfile.citation.lower()
-            if "apa" in cit:
-                bib_style = "apalike"
-            elif "harvard" in cit:
-                bib_style = "apalike"
-
-        return f"""% Compiled in local offline fallback mode.
-% To enable high-quality dynamic academic report generation, please configure the NEXT_PUBLIC_OPENAI_API_KEY environment variable.
-\\documentclass[12pt,a4paper]{{report}}
-\\usepackage[margin=1in]{{geometry}}
-\\usepackage{{setspace}}
-\\usepackage{{hyperref}}
-{spacing_tex}
-\\title{{{payload.project.title}}}
-\\author{{Generated by ReportAI}}
-\\date{{\\today}}
-\\begin{{document}}
-\\maketitle
-\\tableofcontents
-
-{sections_joined}
-
-\\bibliographystyle{{{bib_style}}}
-\\bibliography{{references}}
-\\end{{document}}"""
+    print("<<<<<<<<<<<< NEW GENERATION.PY >>>>>>>>>>>>>>")
 
     api_key = x_openai_api_key or settings.openai_api_key
+
+    print("API KEY:", api_key[:10] + "..." if api_key else "NONE")
+
     if not api_key:
-        return {"latex": get_fallback_latex()}
+        print("NO API KEY -> FALLBACK")
+        return {"latex": _build_fallback_latex(payload)}
 
-    chapters_instruction = ""
-    if payload.templateProfile and payload.templateProfile.chapters:
-        chapters_list_str = ", ".join(payload.templateProfile.chapters)
-        chapters_instruction = f"Use the following exact chapters in this exact order: {chapters_list_str}."
-    else:
-        chapters_instruction = "Use standard report chapters: Abstract, Introduction, Literature Review, Methodology, System Design, Implementation, Testing, Results, and Conclusion."
+    # -------------------------
+    # Build report data
+    # -------------------------
 
-    style_instructions = []
+    active_answers = []
+
+    for key, val in payload.answers.items():
+        if val and not is_nil_answer(val):
+            q_label = next(
+                (q.label for q in payload.questions if q.id == key),
+                key,
+            )
+            active_answers.append(f"- {q_label}: {val}")
+
+    answers_str = (
+        "\n".join(active_answers)
+        if active_answers
+        else "None provided"
+    )
+
+    raw_chapters = (
+        payload.templateProfile.chapters
+        if payload.templateProfile
+        else None
+    )
+
+    chapters = _validate_chapters(raw_chapters) or DEFAULT_CHAPTERS
+
+    FRONT_MATTER = {
+        "certificate",
+        "declaration",
+        "acknowledgement",
+        "table of contents",
+        "contents",
+        "list of figures",
+        "list of tables",
+    }
+
+    body_chapters = [
+        c
+        for c in chapters
+        if c.lower() not in FRONT_MATTER
+    ]
+
+    chapters_instruction = (
+        "Use exactly these chapters in order: "
+        + ", ".join(body_chapters)
+    )
+
+    style_lines = []
+
     if payload.templateProfile:
         if payload.templateProfile.citation:
-            style_instructions.append(f"Follow the {payload.templateProfile.citation} citation style guidelines.")
-        if payload.templateProfile.font:
-            style_instructions.append(f"Format text elements to align with the {payload.templateProfile.font} font style guidelines.")
-        if payload.templateProfile.spacing:
-            try:
-                spacing_val = float(payload.templateProfile.spacing)
-                if spacing_val >= 1.8:
-                    style_instructions.append("Use double line spacing (include \\doublespacing from the setspace package).")
-                elif spacing_val >= 1.3:
-                    style_instructions.append("Use one-half line spacing (include \\onehalfspacing from the setspace package).")
-                else:
-                    style_instructions.append("Use single line spacing (include \\singlespacing from the setspace package).")
-            except Exception:
-                pass
-    style_inst_str = "\n".join(f"- {inst}" for inst in style_instructions) if style_instructions else ""
+            style_lines.append(
+                f"Citation style: {payload.templateProfile.citation}."
+            )
 
-    prompt = f"""You are a world-class academic LaTeX writing system. Write a comprehensive, highly detailed academic project report in LaTeX for the following project:
+        try:
+            spacing = float(payload.templateProfile.spacing or "1.5")
 
-Project Title: {payload.project.title}
-Domain: {payload.project.domain}
-Description: {payload.project.description}
+            if spacing >= 1.8:
+                style_lines.append(r"Use \doublespacing.")
+            elif spacing >= 1.3:
+                style_lines.append(r"Use \onehalfspacing.")
+            else:
+                style_lines.append(r"Use \singlespacing.")
 
-Student Questionnaire Details:
+        except Exception:
+            style_lines.append(r"Use \onehalfspacing.")
+
+    # -------------------------
+    # Build your REAL prompt here
+    # -------------------------
+
+    prompt = f"""
+You are an expert academic report writer specializing in university final-year engineering project reports.
+
+Generate a COMPLETE professional LaTeX report.
+
+PROJECT INFORMATION
+
+Title:
+{payload.project.title}
+
+Domain:
+{payload.project.domain}
+
+Description:
+{payload.project.description}
+
+PROJECT DETAILS PROVIDED BY THE STUDENT
+
 {answers_str}
 
-Structural Chapters:
+REPORT CHAPTERS
+
 {chapters_instruction}
 
-Styling Guidelines:
-{style_inst_str}
+FORMATTING REQUIREMENTS
 
-Instructions:
-1. Generate a complete, compiler-ready LaTeX document starting with \\documentclass[12pt,a4paper]{{report}} and ending with \\end{{document}}.
-2. Organize the LaTeX layout using the requested structural chapters.
-3. Enhance all questionnaire details and write them contextually into highly detailed paragraphs (using academic tone, formal vocabulary, and scientific formatting).
-4. Organize the layout elegantly: use subsections, bullet lists (itemize/enumerate), and LaTeX layout wrappers where appropriate.
-5. Include a Table of Contents (\\tableofcontents) and Title Page (\\maketitle).
-6. Do not use manual spacing commands such as \\vspace or \\hspace in titles, chapters, sections, or body content.
-7. The \\title{{...}} value must be plain text only. Do not wrap the title in \\textbf, \\large, \\centerline, or any other formatting command.
-8. Do not use custom list options such as [label=...], [leftmargin=...], or enumitem-specific syntax. Use plain \\begin{{itemize}}, \\begin{{enumerate}}, and \\item only.
-9. Do not include lstlisting, minted, verbatim, raw JSON/code dumps, or unresolved \\ref references unless the referenced label is also defined in the document.
-10. Do NOT wrap the LaTeX output in markdown ticks (e.g. ```latex ... ```). The output must be the raw LaTeX source string directly."""
+{chr(10).join(style_lines) or "Use one-and-a-half line spacing."}
+
+STRICT RULES
+
+1. Return ONLY raw LaTeX.
+2. Do NOT use markdown.
+3. Do NOT wrap the response in ```latex.
+4. Begin with:
+
+\\documentclass[12pt,a4paper]{{report}}
+
+5. Include these packages:
+
+\\usepackage[a4paper,margin=1in]{{geometry}}
+\\usepackage{{graphicx}}
+\\usepackage{{setspace}}
+\\usepackage[hidelinks]{{hyperref}}
+\\usepackage{{titlesec}}
+\\usepackage{{fancyhdr}}
+\\usepackage{{booktabs}}
+\\usepackage{{caption}}
+\\usepackage{{float}}
+\\usepackage{{amsmath}}
+\\usepackage{{amssymb}}
+\\usepackage{{longtable}}
+
+6. Use:
+
+\\onehalfspacing
+
+7. Configure page numbers:
+
+\\pagestyle{{fancy}}
+\\fancyhf{{}}
+\\fancyfoot[C]{{\\thepage}}
+\\renewcommand{{\\headrulewidth}}{{0pt}}
+
+8. Create a professional title page.
+
+9. Include:
+
+- Certificate
+- Declaration
+- Acknowledgement
+- Abstract
+- Table of Contents
+- List of Figures
+- List of Tables
+
+10. Use Roman page numbering for the preliminary pages.
+
+11. Switch to Arabic numbering after the table of contents.
+
+12. Follow the exact chapter order supplied.
+
+13. Every chapter MUST start with
+
+\\chapter{{Chapter Name}}
+
+14. Every chapter must contain multiple
+
+\\section{{}}
+
+and
+
+\\subsection{{}}
+
+headings.
+
+15. Every chapter should contain 6–10 detailed academic paragraphs.
+
+16. Include technical explanations, algorithms, implementation details, system architecture, workflow, advantages, limitations, and analysis wherever appropriate.
+
+17. Mention figures, tables and equations naturally using placeholders such as:
+
+Figure~\\ref{{fig:architecture}}
+
+Table~\\ref{{tab:results}}
+
+18. Use citation placeholders:
+
+\\cite{{ref1}}
+
+\\cite{{ref2}}
+
+19. Write in formal academic language suitable for submission to a university.
+
+20. Do NOT generate placeholder text such as "Lorem ipsum", "Hello World", or "Content goes here".
+
+21. Produce a report of approximately 40–80 pages when compiled.
+
+22. The document must compile successfully without requiring additional edits.
+
+Return ONLY the LaTeX source from \\documentclass to \\end{{document}}.
+"""
+
+    print("=" * 80)
+    print("PROMPT LENGTH:", len(prompt))
+    print("=" * 80)
+    print(prompt)
+    print("=" * 80)
 
     try:
         client, model = get_openai_client_and_model(api_key)
+
+        print("Provider model:", model)
+
         response = client.chat.completions.create(
             model=model,
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a LaTeX report writing system. You output ONLY raw LaTeX code. No explanations, no markdown blocks, no leading/trailing commentary."
+                    "content": "Output ONLY raw LaTeX.",
                 },
                 {
                     "role": "user",
-                    "content": prompt
-                }
-            ]
+                    "content": prompt,
+                },
+            ],
         )
-        content = response.choices[0].message.content.strip()
-        if content.startswith("```"):
-            content = re.sub(r"^```latex\s*", "", content, flags=re.IGNORECASE)
-            content = re.sub(r"^```\s*", "", content)
-            content = re.sub(r"```$", "", content)
-            content = content.strip()
-        return {"latex": content}
-    except Exception as e:
-        print(f"Error generating LaTeX: {e}")
-        return {"latex": get_fallback_latex()}
 
+        print("=" * 80)
+        print("FULL RESPONSE")
+        print(response)
+        print("=" * 80)
+
+        content = response.choices[0].message.content
+
+        print("=" * 80)
+        print("RAW CONTENT")
+        print(content)
+        print("=" * 80)
+
+        content = content.strip()
+
+        content = re.sub(r"^```latex\s*", "", content, flags=re.IGNORECASE)
+        content = re.sub(r"^```\s*", "", content)
+        content = re.sub(r"```\s*$", "", content).strip()
+
+        return {"latex": content}
+
+    except Exception:
+        import traceback
+
+        traceback.print_exc()
+        raise
 
 @router.post("/questions-public")
 async def generate_questions_public(
     payload: GenerateQuestionsRequest,
     x_openai_api_key: str | None = Header(None, alias="X-OpenAI-API-Key"),
 ):
-    chapters_str = ", ".join(payload.templateProfile.chapters) if (payload.templateProfile and payload.templateProfile.chapters) else "None extracted yet"
-    
+    raw_chapters = payload.templateProfile.chapters if payload.templateProfile else None
+    chapters = _validate_chapters(raw_chapters)
+    chapters_str = ", ".join(chapters) if chapters else "Standard academic chapters"
+
     api_key = x_openai_api_key or settings.openai_api_key
     if not api_key:
-        questions = [
+        return {"questions": [
             {"id": "problem_statement", "label": "What specific problem does your project solve?", "type": "textarea"},
-            {"id": "objectives", "label": "What are the primary objectives of the project?", "type": "textarea"}
-        ]
-        if payload.templateProfile and payload.templateProfile.chapters:
-            for chapter in payload.templateProfile.chapters:
-                if chapter.lower() not in ["abstract", "acknowledgement", "conclusion"]:
-                    questions.append({
-                        "id": f"details_{chapter.lower().replace(' ', '_')}",
-                        "label": f"Describe the key aspects to include in the '{chapter}' section.",
-                        "type": "textarea"
-                    })
-        return {"questions": questions}
+            {"id": "objectives",        "label": "What are the primary objectives of the project?", "type": "textarea"},
+            {"id": "scope",             "label": "What is included and excluded from the project scope?", "type": "textarea"},
+            {"id": "existing_system",   "label": "Describe the existing/current system and its limitations.", "type": "textarea"},
+            {"id": "proposed_system",   "label": "Describe your proposed system and how it improves on the existing one.", "type": "textarea"},
+            {"id": "tech_stack",        "label": "What technologies, tools, and frameworks are used?", "type": "textarea"},
+            {"id": "testing_methods",   "label": "How was the system tested and what were the results?", "type": "textarea"},
+        ]}
 
-    prompt = f"""Based on the following project information and styling template guidelines, generate a list of 5 to 7 specific, highly relevant questionnaire questions (in English) to gather the necessary details from the student to generate a high-quality, comprehensive academic report.
+    prompt = f"""Generate 7–9 specific questionnaire questions to gather student details for a high-quality academic report.
 
 Project Title: {payload.project.title}
 Domain: {payload.project.domain}
 Description: {payload.project.description}
-Extracted Template Chapters: {chapters_str}
+Template Chapters: {chapters_str}
 
-Return the output as a JSON object with a key "questions" containing an array of objects. Each object in the array must have exactly these fields:
-- "id": A unique short identifier (using lowercase alphanumeric and underscores, e.g. "dataset_source")
-- "label": The question text to display to the user (e.g. "What datasets will you use, and how will they be preprocessed?")
-- "type": Either "text" (for short inputs) or "textarea" (for detailed descriptions).
+Return a JSON object with key "questions" containing an array. Each item must have:
+- "id": unique snake_case identifier
+- "label": specific question text tailored to this project's domain
+- "type": "text" or "textarea"
 
-Ensure the questions cover the core methodology, architecture/design, implementation details, evaluation/results, and challenges of the project. Do not generate generic questions; tailor them specifically to the project's domain and description."""
+Cover: problem statement, objectives, scope, existing vs proposed system, tech stack/architecture, implementation details, testing approach, results/outcomes. Make questions specific to this domain and description."""
 
     try:
         client, model = get_openai_client_and_model(api_key)
-        response = client.chat.completions.create(
+        kwargs: dict = dict(
             model=model,
             messages=[
-                {
-                    "role": "system",
-                    "content": "You are an academic advisor. You must return only a valid JSON object containing an array of questions under the key \"questions\". Do not return any other text, markdown formatting, or explanation."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
+                {"role": "system", "content": 'Return only a valid JSON object with key "questions".'},
+                {"role": "user", "content": prompt},
             ],
-            response_format={ "type": "json_object" }
         )
+        if "gemini" not in model.lower():
+            kwargs["response_format"] = {"type": "json_object"}
+        response = client.chat.completions.create(**kwargs)
         import json
-        parsed = json.loads(response.choices[0].message.content.strip())
-        return parsed
+        return json.loads(response.choices[0].message.content.strip())
     except Exception as e:
-        print(f"Error generating AI questions: {e}")
+        print(f"Error generating questions: {e}")
         return {"questions": [
             {"id": "problem_statement", "label": "What specific problem does your project solve?", "type": "textarea"},
-            {"id": "objectives", "label": "What are the primary objectives of the project?", "type": "textarea"}
+            {"id": "objectives",        "label": "What are the primary objectives of the project?", "type": "textarea"},
         ]}
 
 
