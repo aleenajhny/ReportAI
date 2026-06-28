@@ -25,6 +25,8 @@ import { FileDown, Settings, Sparkles, Loader2, RefreshCcw } from "lucide-react"
 import { LatexErrorPanel } from "@/components/latex-error-panel";
 import { compileReport, createReport } from "@/lib/api";
 import { LaTeXError } from "@/lib/types";
+import { generateAnswersWithAI } from "@/lib/report-generation";
+
 
 export function ProjectWorkspace({ projectId }: { projectId: string }) {
   const { user, loading, configured } = useAuth();
@@ -40,6 +42,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
   const [compileErrors, setCompileErrors] = useState<LaTeXError[]>([]);
   const [activeReportId, setActiveReportId] = useState<string | null>(null);
   const router = useRouter();
+  const [isGeneratingAnswers, setIsGeneratingAnswers] = useState(false);
 
   async function loadProjectData() {
     if (!user) return;
@@ -152,7 +155,21 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
       setIsSaving(false);
     }
   }
-
+  async function generateAnswers() {
+    if (!user || !project) return;
+    setIsGeneratingAnswers(true);
+    setMessage("AI is generating answers for your questionnaire...");
+    try {
+      const nextAnswers = await generateAnswersWithAI(answers, questions, project);
+      setAnswers(nextAnswers);
+      await saveQuestionnaire(user.uid, project.id, questions, nextAnswers);
+      setMessage("Answers generated and saved! Review and edit before generating report.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not generate answers.");
+    } finally {
+      setIsGeneratingAnswers(false);
+    }
+  }
   async function generateReport() {
     if (!user || !project) return;
     setIsSaving(true);
@@ -323,6 +340,18 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
               <div className="pt-2 flex flex-wrap gap-2">
                 <Button onClick={saveAnswers} disabled={isSaving} className="font-semibold shadow-sm">
                   {isSaving ? "Saving..." : "Save Answers"}
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={generateAnswers}
+                  disabled={isGeneratingAnswers || isSaving}
+                  className="flex items-center gap-1.5 text-xs font-semibold"
+                >
+                  {isGeneratingAnswers
+                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    : <Sparkles className="h-3.5 w-3.5 text-accent" />
+                  }
+                  {isGeneratingAnswers ? "Generating..." : "Generate Answers"}
                 </Button>
                 <Button 
                   variant="outline"

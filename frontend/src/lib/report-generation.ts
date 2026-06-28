@@ -126,3 +126,32 @@ export function analyzeQuality(latex: string, referenceCount: number): QualitySc
     overall, suggestions
   };
 }
+
+
+export async function generateAnswersWithAI(
+  answers: Record<string, string>,
+  questions: Question[],
+  project: Project,
+): Promise<Record<string, string>> {
+  const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "https://reportai-ytsn.onrender.com/api/v1";
+  const token = typeof window !== "undefined" ? window.localStorage.getItem("reportai_token") : null;
+  const customKey = typeof window !== "undefined" ? window.localStorage.getItem("reportai_custom_api_key") : null;
+
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  if (customKey) headers["X-OpenAI-API-Key"] = customKey;
+
+  const res = await fetch(`${API_URL}/generation/generate-answers-public`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      project: { title: project.title, domain: project.domain, description: project.description },
+      answers,
+      questions,
+    }),
+  });
+
+  if (!res.ok) throw new Error(`Generate answers failed: ${res.status}`);
+  const data = await res.json();
+  return data.answers as Record<string, string>;
+}

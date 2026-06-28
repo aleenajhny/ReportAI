@@ -440,6 +440,128 @@ Rewrite each answer as a formal academic paragraph. Return a JSON object where k
         return {k: ("" if is_nil_answer(v) else v) for k, v in payload.answers.items()}
 
 
+@router.post("/generate-answers-public")
+async def generate_answers_public(
+    payload: EnhanceAnswersRequest,
+    x_openai_api_key: str | None = Header(None, alias="X-OpenAI-API-Key"),
+):
+    api_key = x_openai_api_key or settings.openai_api_key
+
+    questions_block = "\n".join(
+        f'- id="{q.id}" | "{q.label}"'
+        for q in payload.questions
+    )
+
+    existing_block = "\n".join(
+        f'- {q.id}: {payload.answers.get(q.id, "")}'
+        for q in payload.questions
+        if payload.answers.get(q.id) and not is_nil_answer(payload.answers.get(q.id, ""))
+    ) or "None"
+
+    prompt = f"""You are an expert academic writer. Generate complete, realistic, technically accurate answers
+for a university final-year project questionnaire.
+
+Project Title: {payload.project.title}
+Domain: {payload.project.domain}
+Description: {payload.project.description}
+
+Questions to answer:
+{questions_block}
+
+Already answered (preserve these unless empty):
+{existing_block}
+
+Rules:
+- Write in formal academic English suitable for a university report.
+- Each answer: 2-5 sentences, specific to this project domain and description.
+- For technical fields infer realistic plausible values from the description.
+- Return ONLY a JSON object where keys = question id, values = answer strings.
+- No markdown. No code fences. No explanation. Raw JSON only."""
+
+    if not api_key:
+        fallback = {}
+        for q in payload.questions:
+            existing = payload.answers.get(q.id, "")
+            if existing and not is_nil_answer(existing):
+                fallback[q.id] = existing
+            else:
+                fallback[q.id] = f"[Answer for: {q.label}]"
+        return {"answers": fallback}
+
+    try:
+        import json
+
+        client, model = get_openai_client_and_model(api_key)
+        is_gemini = "gemini" in model.lower()
+
+        kwargs: dict = dict(
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Return only a valid JSON object mapping question IDs to answer strings. No markdown, no code fences, no explanation.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+        )
+        if not is_gemini:
+            kwargs["response_format"] = {"type": "json_object"}
+
+        response = client.chat.completions.create(**kwargs)
+
+        # --- robust content extraction ---
+        raw = ""
+        choice = response.choices[0]
+
+        # Gemini thinking models put content in message.content
+        # but sometimes it's None with text in parts
+        if choice.message.content:
+            raw = choice.message.content
+        else:
+            # Try to pull from raw response internals if content is None/empty
+            try:
+                raw = choice.message.model_extra.get("content", "") or ""
+            except Exception:
+                pass
+
+        print("=" * 60)
+        print("RAW GENERATE-ANSWERS RESPONSE:")
+        print(repr(raw[:500]))
+        print("=" * 60)
+
+        if not raw or not raw.strip():
+            raise ValueError("Empty response from AI model")
+
+        # Strip markdown fences (```json ... ``` or ``` ... ```)
+        raw = raw.strip()
+        raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
+        raw = re.sub(r"```\s*$", "", raw).strip()
+
+        # Find JSON object boundaries in case model prepended text
+        start = raw.find("{")
+        end = raw.rfind("}") + 1
+        if start == -1 or end == 0:
+            raise ValueError(f"No JSON object found in response: {raw[:200]}")
+        raw = raw[start:end]
+
+        parsed = json.loads(raw)
+
+        # Merge: keep existing non-nil, fill rest with AI
+        merged = {}
+        for q in payload.questions:
+            existing = payload.answers.get(q.id, "")
+            if existing and not is_nil_answer(existing):
+                merged[q.id] = existing
+            else:
+                merged[q.id] = parsed.get(q.id, "")
+        return {"answers": merged}
+
+    except Exception as e:
+        print(f"Error generating answers: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"answers": {q.id: payload.answers.get(q.id, "") for q in payload.questions}}
+
 @router.post("/generate-report-public")
 async def generate_report_public(
     payload: GenerateReportRequest,
